@@ -1,0 +1,28 @@
+on: push
+
+name: Clippy Check
+
+jobs:
+  clippy-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v1
+      - name: Install Protoc
+        uses: arduino/setup-protoc@v1
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - run: rustup component add clippy
+      - uses: actions-rs/clippy-check@v1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          args: >
+            --tests
+            --benches
+            --all-features -- 
+            -D warnings 
+            -D unsafe_code 
+            -D missing_docs
+            -D clippy::missing_docs_in_private_items
+            -D clippy::needless_pass_by_value
+            -D clippy::needless_pass_by_ref_mut
+            -D clippy::unused_async
