@@ -94,13 +94,13 @@ impl Dealer {
             let request = job_queue.recv().await.unwrap();
             let self_ = self.clone();
             tokio::spawn(async move {
-                self_.handle_request(request).await;
+                self_.handle_request(request);
             });
         }
     }
 
     /// Handle a request
-    async fn handle_request(&self, request: DealerJob) {
+    fn handle_request(&self, request: DealerJob) {
         // Lock the requests
         let id = request.request_id;
         let mut open_requests = self.open_requests.lock().unwrap();
@@ -274,5 +274,118 @@ impl Dealer {
         }
 
         shares
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use itertools::{izip, Itertools};
+    use renegade_dealer_api::{DealerRequest, DealerResponse};
+    use uuid::Uuid;
+
+    use super::{
+        create_dealer_sender_receiver, create_response_sender_receiver, Dealer, DealerJob, Scalar,
+        ScalarShare,
+    };
+
+    // -----------
+    // | Helpers |
+    // -----------
+
+    /// Run a mock dealer
+    async fn get_mock_dealer_response(n: u32) -> (DealerResponse, DealerResponse) {
+        let (send, recv) = create_dealer_sender_receiver();
+        Dealer::start(recv);
+
+        let (send1, mut recv1) = create_response_sender_receiver();
+        let (send2, mut recv2) = create_response_sender_receiver();
+        let rid = Uuid::new_v4();
+        let req = DealerRequest {
+            n_triples: n,
+            n_random_bits: n,
+            n_random_values: n,
+            n_input_masks: n,
+            n_inverse_pairs: n,
+        };
+
+        // Simulate two clients
+        let job1 = DealerJob::new(rid, req.clone(), send1);
+        let job2 = DealerJob::new(rid, req, send2);
+
+        send.send(job1).unwrap();
+        send.send(job2).unwrap();
+
+        // Get two responses
+        (recv1.recv().await.unwrap(), recv2.recv().await.unwrap())
+    }
+
+    /// Check that the macs correctly authenticate the given pairs of shares
+    /// under the given key
+    ///
+    /// Return the recovered values
+    fn recover_and_check_macs(
+        mac_key: Scalar,
+        share1: &[ScalarShare],
+        share2: &[ScalarShare],
+    ) -> Vec<Scalar> {
+        let vals =
+            share1.iter().zip(share2.iter()).map(|(v1, v2)| v1.share() + v2.share()).collect_vec();
+        let macs =
+            share1.iter().zip(share2.iter()).map(|(v1, v2)| v1.mac() + v2.mac()).collect_vec();
+        let expected_macs = vals.iter().map(|v| v * mac_key).collect_vec();
+
+        assert_eq!(macs, expected_macs);
+        vals
+    }
+
+    // ---------
+    // | Tests |
+    // ---------
+
+    #[tokio::test]
+    async fn test_dealer() {
+        const N: u32 = 10;
+        let (resp1, resp2) = get_mock_dealer_response(N).await;
+        let mac_key = resp1.mac_key_share + resp2.mac_key_share;
+
+        // Check the random bits
+        let bits = recover_and_check_macs(mac_key, &resp1.random_bits, &resp2.random_bits);
+        assert!(bits.into_iter().all(|b| b == Scalar::zero() || b == Scalar::one()));
+
+        // Check the random values
+        recover_and_check_macs(mac_key, &resp1.random_values, &resp2.random_values);
+
+        // Check the input masks
+        let (mask1, mask1_share1, mask2_share1) = resp1.input_masks.clone();
+        let (mask2, mask2_share2, mask1_share2) = resp2.input_masks.clone();
+
+        let mask1_recovered = recover_and_check_macs(mac_key, &mask1_share1, &mask1_share2);
+        let mask2_recovered = recover_and_check_macs(mac_key, &mask2_share1, &mask2_share2);
+        assert_eq!(mask1, mask1_recovered);
+        assert_eq!(mask2, mask2_recovered);
+
+        // Check the inverse pairs
+        let (r1, r_inv1) = resp1.inverse_pairs.clone();
+        let (r2, r_inv2) = resp2.inverse_pairs.clone();
+        let r1_recovered = recover_and_check_macs(mac_key, &r1, &r2);
+        let r2_recovered = recover_and_check_macs(mac_key, &r_inv1, &r_inv2);
+
+        let res = r1_recovered
+            .iter()
+            .zip(r2_recovered.iter())
+            .map(|(r1, r2)| r1 * r2)
+            .all(|r| r == Scalar::one());
+        assert!(res);
+
+        // Check the triples
+        let (a1, b1, c1) = resp1.beaver_triples.clone();
+        let (a2, b2, c2) = resp2.beaver_triples.clone();
+        let a_recovered = recover_and_check_macs(mac_key, &a1, &a2);
+        let b_recovered = recover_and_check_macs(mac_key, &b1, &b2);
+        let c_recovered = recover_and_check_macs(mac_key, &c1, &c2);
+
+        for (a, b, c) in izip!(a_recovered, b_recovered, c_recovered) {
+            assert_eq!(a * b, c);
+        }
     }
 }
