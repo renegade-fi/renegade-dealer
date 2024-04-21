@@ -1,0 +1,21 @@
+[package]
+name = "renegade-dealer"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# === HTTP Server === #
+http-body-util = "0.1.0"
+warp = "0.3"
+renegade-dealer-api = { path = "../renegade-dealer-api" }
+
+# === Cryptography === #
+ark-bn254 = "0.4"
+ark-mpc = { git = "https://github.com/renegade-fi/ark-mpc.git" }
+
+# === Misc === #
+clap = { version = "4.5", features = ["derive"] }
+itertools = "0.12"
+rand = "0.8"
+tokio = { version = "1.21", features = ["full"] }
+uuid = "1.8"

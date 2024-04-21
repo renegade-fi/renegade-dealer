@@ -1,0 +1,11 @@
+[workspace]
+members = ["renegade-dealer", "renegade-dealer-api"]
+
+[profile.bench]
+opt-level = 3
+lto = true
+debug = true
+
+[profile.release]
+opt-level = 3 # Full optimizations
+lto = true
