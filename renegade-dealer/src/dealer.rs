@@ -6,6 +6,7 @@
 //! The dealer aggregates requests between matching parties and generates
 //! offline phase results
 
+use ark_mpc::network::PartyId;
 use itertools::Itertools;
 use rand::{thread_rng, Rng};
 use std::{
@@ -18,6 +19,8 @@ use tokio::sync::mpsc::{
 
 use renegade_dealer_api::{DealerRequest, DealerResponse, RequestId};
 use uuid::Uuid;
+
+use crate::BadRequestError;
 
 // ---------
 // | Types |
@@ -40,9 +43,9 @@ pub fn create_dealer_sender_receiver() -> (DealerSender, DealerReceiver) {
 }
 
 /// The response channel sender from the dealer
-pub type ResponseSender = Sender<DealerResponse>;
+pub type ResponseSender = Sender<Result<DealerResponse, BadRequestError>>;
 /// The response channel receiver from the dealer
-pub type ResponseReceiver = Receiver<DealerResponse>;
+pub type ResponseReceiver = Receiver<Result<DealerResponse, BadRequestError>>;
 /// Create a new sender and receiver
 pub fn create_response_sender_receiver() -> (ResponseSender, ResponseReceiver) {
     unbounded_channel()
@@ -52,6 +55,8 @@ pub fn create_response_sender_receiver() -> (ResponseSender, ResponseReceiver) {
 pub struct DealerJob {
     /// The request ID
     pub request_id: RequestId,
+    /// The id of the requesting party
+    pub party_id: PartyId,
     /// The request
     pub request: DealerRequest,
     /// The channel on which to respond
@@ -60,8 +65,13 @@ pub struct DealerJob {
 
 impl DealerJob {
     /// Constructor
-    pub fn new(request_id: RequestId, request: DealerRequest, chan: ResponseSender) -> Self {
-        Self { request_id, request, chan }
+    pub fn new(
+        request_id: RequestId,
+        party_id: PartyId,
+        request: DealerRequest,
+        chan: ResponseSender,
+    ) -> Self {
+        Self { request_id, party_id, request, chan }
     }
 }
 
@@ -106,7 +116,16 @@ impl Dealer {
         let mut open_requests = self.open_requests.lock().unwrap();
         if let Some(existing_req) = open_requests.remove(&id) {
             assert_eq!(existing_req.request, request.request);
-            tokio::task::spawn_blocking(move || Self::handle_ready_pair(&existing_req, &request));
+
+            // Requests should be from different parties
+            if existing_req.party_id == request.party_id {
+                let err = BadRequestError("Duplicate party ID");
+                request.chan.send(Err(err.clone())).unwrap();
+                existing_req.chan.send(Err(err)).unwrap();
+                return;
+            }
+
+            Self::handle_ready_pair(&existing_req, &request);
         } else {
             open_requests.insert(id, request);
         }
@@ -132,8 +151,8 @@ impl Dealer {
         Self::gen_inverse_pairs(req.n_inverse_pairs as usize, mac_key, &mut resp1, &mut resp2);
         Self::gen_triples(req.n_triples as usize, mac_key, &mut resp1, &mut resp2);
 
-        req1.chan.send(resp1).unwrap();
-        req2.chan.send(resp2).unwrap();
+        req1.chan.send(Ok(resp1)).unwrap();
+        req2.chan.send(Ok(resp2)).unwrap();
     }
 
     // ------------------------------------
@@ -279,7 +298,10 @@ impl Dealer {
 
 #[cfg(test)]
 mod test {
+    use ark_mpc::{PARTY0, PARTY1};
     use itertools::{izip, Itertools};
+    use k256::SecretKey;
+    use rand::thread_rng;
     use renegade_dealer_api::{DealerRequest, DealerResponse};
     use uuid::Uuid;
 
@@ -292,6 +314,20 @@ mod test {
     // | Helpers |
     // -----------
 
+    /// Get a mock dealer request
+    fn mock_dealer_req(n: u32) -> DealerRequest {
+        let mut rng = thread_rng();
+        let key1 = SecretKey::random(&mut rng);
+        let key2 = SecretKey::random(&mut rng);
+
+        DealerRequest::new(key1.public_key(), key2.public_key())
+            .with_n_triples(n)
+            .with_n_input_masks(n)
+            .with_n_inverse_pairs(n)
+            .with_n_random_bits(n)
+            .with_n_random_values(n)
+    }
+
     /// Run a mock dealer
     async fn get_mock_dealer_response(n: u32) -> (DealerResponse, DealerResponse) {
         let (send, recv) = create_dealer_sender_receiver();
@@ -300,23 +336,17 @@ mod test {
         let (send1, mut recv1) = create_response_sender_receiver();
         let (send2, mut recv2) = create_response_sender_receiver();
         let rid = Uuid::new_v4();
-        let req = DealerRequest {
-            n_triples: n,
-            n_random_bits: n,
-            n_random_values: n,
-            n_input_masks: n,
-            n_inverse_pairs: n,
-        };
+        let req = mock_dealer_req(n);
 
         // Simulate two clients
-        let job1 = DealerJob::new(rid, req.clone(), send1);
-        let job2 = DealerJob::new(rid, req, send2);
+        let job1 = DealerJob::new(rid, PARTY0, req.clone(), send1);
+        let job2 = DealerJob::new(rid, PARTY1, req, send2);
 
         send.send(job1).unwrap();
         send.send(job2).unwrap();
 
         // Get two responses
-        (recv1.recv().await.unwrap(), recv2.recv().await.unwrap())
+        (recv1.recv().await.unwrap().unwrap(), recv2.recv().await.unwrap().unwrap())
     }
 
     /// Check that the macs correctly authenticate the given pairs of shares
