@@ -22,8 +22,16 @@ use clap::Parser;
 use dealer::{
     create_dealer_sender_receiver, create_response_sender_receiver, Dealer, DealerJob, DealerSender,
 };
-use renegade_dealer_api::{DealerRequest, DealerResponse, RequestId};
+use renegade_dealer_api::{DealerRequest, DealerResponse, ErrorResponse, RequestId};
 use warp::Filter;
+
+/// The maximum number of values that may be requested at once by a pair
+const MAX_REQUEST_SIZE: u32 = 1_500_000;
+
+/// An error type indicating a bad request
+#[derive(Debug)]
+struct BadRequestError(&'static str);
+impl warp::reject::Reject for BadRequestError {}
 
 /// Renegade Dealer server configuration
 #[derive(Parser, Debug)]
@@ -52,12 +60,16 @@ async fn main() {
         .and_then(move |request_id, body| {
             let dealer_send = dealer_send.clone();
             async move {
-                let resp = handle_req(request_id, body, dealer_send).await;
-                Ok::<_, warp::Rejection>(warp::reply::json(&resp))
+                match handle_req(request_id, body, dealer_send).await {
+                    Ok(resp) => Ok(warp::reply::json(&resp)),
+                    Err(rej) => Err(rej),
+                }
             }
         });
 
-    warp::serve(setup).run(([127, 0, 0, 1], cli.port)).await
+    let routes = setup.recover(handle_rejection);
+
+    warp::serve(routes).run(([127, 0, 0, 1], cli.port)).await
 }
 
 /// Handle an incoming client request
@@ -65,10 +77,23 @@ async fn handle_req(
     request_id: RequestId,
     body: DealerRequest,
     dealer_queue: DealerSender,
-) -> DealerResponse {
-    // Send a request to the dealer
+) -> Result<DealerResponse, warp::Rejection> {
+    if body.total_values() > MAX_REQUEST_SIZE {
+        return Err(warp::reject::custom(BadRequestError("Request size too large")));
+    }
+
     let (send, mut recv) = create_response_sender_receiver();
     dealer_queue.send(DealerJob::new(request_id, body, send)).unwrap();
 
-    recv.recv().await.unwrap()
+    Ok(recv.recv().await.unwrap())
+}
+
+/// Handle a rejection from the dealer
+async fn handle_rejection(err: warp::Rejection) -> Result<impl warp::Reply, warp::Rejection> {
+    if let Some(BadRequestError(msg)) = err.find::<BadRequestError>() {
+        let json = warp::reply::json(&ErrorResponse { message: msg, code: 400 });
+        Ok(warp::reply::with_status(json, warp::http::StatusCode::BAD_REQUEST))
+    } else {
+        Err(err)
+    }
 }

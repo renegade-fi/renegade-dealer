@@ -21,6 +21,15 @@ type Scalar = ark_mpc::algebra::Scalar<Curve>;
 /// A type alias for a scalar share
 type ScalarShare = ark_mpc::algebra::ScalarShare<Curve>;
 
+/// A response to a bad request
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ErrorResponse {
+    /// The error code associated with the response
+    pub code: u32,
+    /// The error message associated with the response
+    pub message: &'static str,
+}
+
 /// A request for offline phase randomness from the dealer
 #[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
 pub struct DealerRequest {
@@ -42,6 +51,17 @@ pub struct DealerRequest {
     /// The number of Beaver triples to generate
     #[serde(default)]
     pub n_triples: u32,
+}
+
+impl DealerRequest {
+    /// Return the total number of requested values
+    pub fn total_values(&self) -> u32 {
+        self.n_random_bits
+            + self.n_random_values
+            + self.n_input_masks
+            + self.n_inverse_pairs
+            + self.n_triples
+    }
 }
 
 /// A response from the Dealer
