@@ -63,7 +63,7 @@ pub struct ErrorResponse {
 }
 
 /// A request for offline phase randomness from the dealer
-#[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, Eq)]
 pub struct DealerRequest {
     /// The public key of the first party in the exchange
     #[serde(serialize_with = "serialize_key", deserialize_with = "deserialize_key")]
@@ -71,6 +71,12 @@ pub struct DealerRequest {
     /// The public key of the second party in the exchange
     #[serde(serialize_with = "serialize_key", deserialize_with = "deserialize_key")]
     pub second_party_key: PublicKey,
+
+    /// The mac key to use for the request
+    ///
+    /// If not present, the dealer will generate one
+    #[serde(default)]
+    pub mac_key: Option<Scalar>,
 
     /// The number of random bits to generate
     #[serde(default)]
@@ -92,12 +98,26 @@ pub struct DealerRequest {
     pub n_triples: u32,
 }
 
+impl PartialEq for DealerRequest {
+    // Ignore the mac key
+    fn eq(&self, other: &Self) -> bool {
+        self.first_party_key == other.first_party_key
+            && self.second_party_key == other.second_party_key
+            && self.n_random_bits == other.n_random_bits
+            && self.n_random_values == other.n_random_values
+            && self.n_input_masks == other.n_input_masks
+            && self.n_inverse_pairs == other.n_inverse_pairs
+            && self.n_triples == other.n_triples
+    }
+}
+
 impl DealerRequest {
     /// Create a new request from a pair of keys
     pub fn new(first_party_key: PublicKey, second_party_key: PublicKey) -> Self {
         Self {
             first_party_key,
             second_party_key,
+            mac_key: None,
             n_random_bits: 0,
             n_random_values: 0,
             n_input_masks: 0,
@@ -113,6 +133,12 @@ impl DealerRequest {
             + self.n_input_masks
             + self.n_inverse_pairs
             + self.n_triples
+    }
+
+    /// Set the mac key to use for the request
+    pub fn with_mac_key(mut self, mac_key: Scalar) -> Self {
+        self.mac_key = Some(mac_key);
+        self
     }
 
     /// Set the number of random bits to generate

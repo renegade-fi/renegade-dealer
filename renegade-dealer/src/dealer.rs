@@ -137,9 +137,9 @@ impl Dealer {
         let req = &req1.request;
 
         // Generate the mac key
-        let mac_key = Scalar::random(&mut rng);
-        let mac_share1 = Scalar::random(&mut rng);
-        let mac_share2 = mac_key - mac_share1;
+        let mac_share1 = req1.request.mac_key.unwrap_or_else(|| Scalar::random(&mut rng));
+        let mac_share2 = req2.request.mac_key.unwrap_or_else(|| Scalar::random(&mut rng));
+        let mac_key = mac_share1 + mac_share2;
 
         let mut resp1 = DealerResponse { mac_key_share: mac_share1, ..Default::default() };
         let mut resp2 = DealerResponse { mac_key_share: mac_share2, ..Default::default() };
