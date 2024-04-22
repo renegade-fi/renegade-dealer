@@ -64,7 +64,7 @@ async fn main() {
     Dealer::start(dealer_recv);
 
     // POST /v0/offline-phase/:request_id
-    let setup = warp::post()
+    let offline_phase = warp::post()
         .and(warp::path("v0"))
         .and(warp::path("offline-phase"))
         .and(warp::path::param::<RequestId>())
@@ -82,7 +82,13 @@ async fn main() {
         })
         .recover(handle_rejection);
 
-    warp::serve(setup).run(([127, 0, 0, 1], cli.port)).await
+    // GET /ping
+    let ping = warp::get()
+        .and(warp::path("ping"))
+        .map(|| warp::reply::with_status("PONG", warp::http::StatusCode::OK));
+
+    let routes = offline_phase.or(ping);
+    warp::serve(routes).run(([0, 0, 0, 0], cli.port)).await
 }
 
 /// Validates the incoming request headers and body.
